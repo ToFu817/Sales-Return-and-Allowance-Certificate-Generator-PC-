@@ -1,0 +1,639 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>折讓單產生器</title>
+
+<!-- libs -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+<style>
+  /* page & UI */
+  :root{ --a4-w-mm:210; --a4-h-mm:297; }
+  body{ font-family:"標楷體","DFKai-SB","PMingLiU","Microsoft JhengHei","Noto Sans TC",sans-serif; margin:18px; background:#f2f2f2; color:#111; }
+  .wrap{ max-width:1100px; margin:0 auto; display:grid; grid-template-columns:1fr; gap:14px; align-items:start; }
+  .panel{ background:#fff; padding:14px; border-radius:12px; box-shadow:0 2px 12px rgba(0,0,0,0.06); }
+  h1{ font-size:16px; margin:0 0 8px 0; text-align:left; }
+  label{ display:block; font-size:12px; margin:6px 0 3px; }
+  input[type=text], input[type=date], input[type=number]{ width:100%; padding:12px; border:1px solid #ddd; border-radius:6px; box-sizing:border-box; font-size:14px; }
+  .row{ display:flex; gap:12px; margin-bottom:12px; }
+  .col{ flex:1; min-width:140px; }
+  button{ background:#222; color:#fff; border:none; padding:12px 12px; border-radius:6px; cursor:pointer; }
+  button.secondary{ background:#888; }
+
+  table{ width:100%; border-collapse:collapse; font-size:12px; }
+  table th, table td{ border:1px solid #d0d0d0; padding:6px; vertical-align:middle; }
+  table th{ background:#fafafa; font-weight:700; text-align:center; }
+  .muted{ color:#666; font-size:12px; }
+
+  /* Preview area (right column) */
+  .preview-wrap{ position:relative; }
+  .preview-title{ font-weight:700; margin-bottom:12px; }
+  .preview{ background:#fff; border:1px solid #cfcfcf; padding:12px; border-radius:6px; }
+  .preview-note{ font-size:12px; color:#666; margin-top:12px; }
+
+  /* A4 pages in preview - scale for screen */
+  .a4-container{ width:210mm; /* real A4 width */ margin:12px auto; background:#fff; box-shadow:0 4px 18px rgba(0,0,0,0.08); }
+  .a4page{ width:210mm; height:297mm; padding:12mm; box-sizing:border-box; font-size:12px; color:#111; background:#fff; }
+  .page-grid{ display:flex; flex-direction:column; gap:8mm; height:100%; }
+
+  /* single copy box (half page) */
+  .copy{ border:1px solid #999; padding:12px; box-sizing:border-box; min-height:calc(50% - 12px); display:flex; flex-direction:column; }
+  .hdr{ display:flex; justify-content:space-between; gap:12px; }
+  .hdr .left{ width:60%; border:1px solid #444; padding:6px; box-sizing:border-box; }
+  .hdr .right{ width:38%; text-align:right; box-sizing:border-box; }
+
+  .title-center{ text-align:center; font-weight:700; font-size:14px; margin-bottom:4px; }
+  .small{ font-size:12px; color:#333; }
+
+  .items-table{ width:100%; border-collapse:collapse; margin-top:12px; font-size:12px; }
+  .items-table td.right, .items-table th.right {
+  text-align: right;
+}
+
+  .items-table th{ background:#f6f6f6; text-align:center; }
+
+  /* 合計顯示在表格底部（tfoot）靠下 */
+  .items-table tfoot td{ font-weight:700; text-align:right; vertical-align:bottom; padding-bottom:6px; }
+
+  /* bottom area: left-block (buyer) & right-block (totals + signature) */
+  .bottom{ display:flex; justify-content:space-between; gap:12px; margin-top:12px; }
+  .left-block{ width:60%; border:1px solid #444; padding:6px; box-sizing:border-box; }
+  .right-block{ width:38%; text-align:right; box-sizing:border-box; }
+
+  .signature-box{ border:1px solid #444; width:160px; height:56px; display:inline-block; margin-top:12px; }
+
+  /* dashed separator (not necessary in PDF but kept) */
+  .dashed{ border-top:2px dashed #666; margin:12px 0; }
+
+  /* right vertical label (直書) */
+  .vertical-label{ 
+position:absolute; 
+right:45mm;       /* 往框框旁邊靠一點 */ 
+top:30%; 
+writing-mode: vertical-rl; /* 直書 */ 
+text-orientation:upright; 
+font-weight:700; 
+font-size:12px; 
+color:#333; 
+}
+
+  /* responsive: make UI single column on narrow screens */
+  @media (max-width:1200px){
+    .wrap{ grid-template-columns:1fr; }
+    .a4-container{ transform:scale(0.7); transform-origin:top left; width:297mm; } /* scale preview for mobile */
+  }
+
+/* 中間虛線，用來區分上下兩聯 */
+.page-divider {
+  position: absolute;
+  top: 25%;
+  left: 0;
+  width: 100%;
+  border-top: 2px dashed #666;
+  transform: translateY(-1px);
+  z-index: 10;
+}
+/* 確保 a4 page 有定位上下文，讓絕對定位的 page-divider 以每頁為基準 */
+.a4page {
+  position: relative; /* 新增：非常重要 */
+  width:210mm;
+  height:297mm;
+  padding:12mm;
+  box-sizing:border-box;
+  font-size:12px;
+  color:#111;
+  background:#fff;
+}
+
+/* 中間虛線，用來區分上下兩聯（以 .a4page 為參考） */
+.page-divider {
+  position: absolute;
+  top: 50%;          /* 以 .a4page 的高度為基準 */
+  left: 12mm;        /* 與頁邊距對齊（可調） */
+  right: 12mm;       /* 與頁邊距對齊（可調） */
+  border-top: 2px dashed #666;
+  transform: translateY(-1px);
+  z-index: 10;
+  pointer-events: none; /* 不會攔截滑鼠事件 */
+}
+
+
+/* 🔶 原進貨人營業人(或原買受人) 欄位樣式 */
+.row.buyer-name {
+  display: flex;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.row.buyer-name .label {
+  flex: 0 0 80mm; /* 左邊標籤寬度 */
+  font-weight: bold;
+}
+
+.row.buyer-name .value {
+  flex: 1; /* 自動撐滿右邊 */
+  border: 2px solid red; /* 改成紅框 */
+  padding: 3px 6px;
+  min-height: 20px;
+  border-radius: 4px; /* 可有可無，看你想不想圓角 */
+}
+
+
+/* 🔹 PDF 生成專用樣式，增加間距 */
+.pdf-mode .a4page,
+.pdf-mode .copy,
+.pdf-mode .items-table td,
+.pdf-mode .items-table th,
+.pdf-mode .hdr div,
+.pdf-mode .bottom div,
+.pdf-mode .title-center,
+.pdf-mode .vertical-label {
+  letter-spacing: 2px !important; /* PDF 也套用字間距 */
+}
+
+
+
+/* 🔹 全局字間距 */
+body, input, select, textarea, .preview, .a4page, .copy, .items-table td, .items-table th, .hdr div, .bottom div, .title-center, .vertical-label {
+  letter-spacing: 2px; /* 調整這個值即可增減字間距 */
+}
+
+
+
+
+
+
+
+
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <!-- left: inputs -->
+  <div class="panel">
+    <h1>折讓單輸入</h1>
+
+    <div class="row">
+      <div class="col"><label>原開立銷貨發票單位公司名稱</label><input id="seller_name" type="text" placeholder="◯◯有限公司"></div>
+      <div class="col"><label>營利事業統一編號</label><input id="seller_tax" type="text" placeholder="00000000"></div>
+      <div class="col"><label>營業所在地址</label><input id="seller_addr" type="text" placeholder="桃園市......"></div>
+    </div>
+
+    <div class="row">
+      <div class="col"><label>原進貨人營業人名稱(或原買受人)</label><input id="buyer_name" type="text" placeholder="◯◯有限公司"></div>
+      <div class="col"><label>營利事業統一編號(或身分證字號)</label><input id="buyer_tax" type="text" placeholder="00000000"></div>
+      <div class="col"><label>地址</label><input id="buyer_addr" type="text" placeholder="桃園市......"></div>
+    </div>
+
+    <div class="row">
+      <div class="col"><label>折讓單日期</label><input id="nota_date" type="date"></div>
+      <div class="col"><label>折讓單編號</label><input id="nota_no" type="text" placeholder="（選填）"></div>
+      <div class="col"><label>備註</label><input id="nota_note" type="text" placeholder="（選填）"></div>
+    </div>
+
+    <hr style="border:none;height:1px;background:#eee;margin:12px 0;">
+
+    <div style="font-weight:700; margin-bottom:12px;">新增發票明細</div>
+<div class="row">
+  <div style="flex:1">
+    <label>聯式</label>
+    <select id="inv_type" style="width:100%; height:32px; box-sizing:border-box;">
+      <option value="三" selected>三</option>
+      <option value="二">二</option>
+    </select>
+  </div>
+
+  <div style="flex:1">
+    <label>原發票日期</label>
+    <input id="inv_date" type="date" style="width:100%; height:32px; box-sizing:border-box;">
+  </div>
+
+  <div style="flex:1">
+    <label>原發票號碼</label>
+    <input id="inv_no" type="text" style="width:100%; height:32px; box-sizing:border-box;">
+  </div>
+
+  <div style="flex:2">
+    <label>品名 / 說明</label>
+    <input id="item_desc" type="text" style="width:100%; height:32px; box-sizing:border-box;">
+  </div>
+
+  <div style="width:90px">
+    <label>數量</label>
+    <input id="item_qty" type="number" min="1" value="1" style="width:100%; height:32px; box-sizing:border-box;">
+  </div>
+
+  <div style="width:140px">
+    <label>單價（未稅）</label>
+    <input id="item_price" type="number" min="0" step="0.01" value="0" style="width:100%; height:32px; box-sizing:border-box;">
+  </div>
+
+  <div style="flex:1">
+    <label>備註</label>
+    <select id="tax_type" style="width:100%; height:32px; box-sizing:border-box;">
+      <option value="應稅" selected>應稅</option>
+      <option value="免稅">免稅</option>
+      <option value="零稅率">零稅率</option>
+    </select>
+  </div>
+
+  <div style="width:110px; display:flex; align-items:flex-end">
+    <button id="addBtn" style="width:100%; height:32px;">加入明細</button>
+  </div>
+</div>
+
+
+
+<div style="margin-top:10px;">
+  <table id="tempTable">
+    <thead>
+      <tr>
+        <th>序號</th>
+        <th>聯式</th>
+        <th>發票日期</th>
+        <th>原發票號碼</th>
+        <th>品名 / 說明</th>
+        <th>數量</th>
+        <th>單價（未稅）</th>
+        <th>未稅金額</th>
+        <th>稅金</th>
+        <th>含稅金額</th>
+        <th>備註</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody id="tempBody">
+      <tr><td colspan="12" class="center muted">尚無明細</td></tr>
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="7" class="right">合計</td>
+        <td class="right" id="sumUntaxed">0.00</td>
+        <td class="right" id="sumTax">0.00</td>
+        <td class="right" id="sumTotal">0.00</td>
+        <td></td>
+      </tr>
+    </tfoot>
+  </table>
+</div>
+
+
+    <div style="display:flex; justify-content:space-between; gap:12px; margin-top:12px;">
+      <button id="clearAll" class="secondary">清除所有暫存</button>
+      <div style="display:flex; gap:12px;">
+        <button id="updatePreview">更新預覽</button>
+        <button id="downloadPdf" style="background:#0b79d0">下載 PDF（共四聯）</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- right: preview -->
+  <div class="panel preview-wrap">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <div>
+        <div class="preview-title">即時預覽</div>
+        <div class="muted">請確認內容，按「確認並下載 PDF」會產生一份折讓單（每頁上下兩聯）。</div>
+      </div>
+      <div>
+        <button id="downloadPdf2">確認並下載 PDF</button>
+      </div>
+    </div>
+
+    <div class="preview" id="previewArea" style="margin-top:12px;">
+      <!-- A4 preview container (will be filled by JS) -->
+      <div class="a4-container" id="previewPages">
+        <!-- JS 會動態產生 .a4page 內容（2 pages） -->
+      </div>
+    </div>
+    <div class="preview-note">測試：若系統有「標楷體」字型，預覽與 PDF 會使用標楷體。</div>
+  </div>
+</div>
+
+<script>
+/* ---------- data & helpers ---------- */
+let items = [];
+const TAX_RATE = 0.05; // 預設營業稅 5%
+
+
+
+
+function fmt(n){ 
+  return Number(n||0).toLocaleString('zh-TW',{minimumFractionDigits:0, maximumFractionDigits:0}); 
+}
+function escapeHtml(s){ if(!s) return ''; return String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'); }
+
+/* ---------- table & preview update ---------- */
+function refreshTempTable(){
+  const tbody = document.getElementById('tempBody');
+  tbody.innerHTML = '';
+  if(items.length === 0){
+    tbody.innerHTML = '<tr><td colspan="10" class="center muted">尚無明細</td></tr>';
+  } else {
+    let sumU=0, sumTax=0, sumWith=0;
+    items.forEach((it, idx)=>{
+const untaxed = Number(it.qty) * Number(it.price || 0);
+let tax = 0;
+if(it.tax_type === "應稅"){
+    tax = Math.round(untaxed * TAX_RATE * 100) / 100;
+} // 免稅、零稅率就是 0
+const withtax = untaxed + tax;
+
+      sumU += untaxed; sumTax += tax; sumWith += withtax;
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${idx+1}</td>
+        <td>${escapeHtml(it.inv_type)}</td>
+        <td>${escapeHtml(it.inv_date || '')}</td>
+        <td>${escapeHtml(it.inv_no)}</td>
+        <td>${escapeHtml(it.desc)}</td>
+        <td class="center">${it.qty}</td>
+        <td class="right">${fmt(it.price)}</td>
+        <td class="right">${fmt(untaxed)}</td>
+        <td class="right">${fmt(tax)}</td>
+        <td class="right">${fmt(withtax)}</td>
+        <td>${escapeHtml(it.tax_type)}</td>
+
+        <td class="center"><button onclick="removeItem(${idx})">刪除</button></td>`;
+      tbody.appendChild(tr);
+    });
+    document.getElementById('sumUntaxed').innerText = fmt(sumU);
+    document.getElementById('sumTax').innerText = fmt(sumTax);
+    document.getElementById('sumTotal').innerText = fmt(sumWith);
+  }
+  buildPreview(); // 更新預覽
+}
+
+function removeItem(i){ items.splice(i,1); refreshTempTable(); }
+
+document.getElementById('addBtn').addEventListener('click',()=>{
+  const inv_type = document.getElementById('inv_type').value.trim();
+  const inv_date = document.getElementById('inv_date').value;
+  const inv_no = document.getElementById('inv_no').value.trim();
+  const desc = document.getElementById('item_desc').value.trim();
+  const qty = Number(document.getElementById('item_qty').value) || 0;
+  const price = Number(document.getElementById('item_price').value) || 0;
+  const tax_type = document.getElementById('tax_type').value.trim();
+  if(!desc || qty <= 0){ alert('請輸入品名與數量'); return; }
+  items.push({  inv_type,inv_date,inv_no, desc, qty, price,tax_type });
+  document.getElementById('inv_type').value=''; document.getElementById('inv_date').value='';document.getElementById('inv_no').value=''; document.getElementById('item_desc').value=''; document.getElementById('item_qty').value=1; document.getElementById('item_price').value=0; document.getElementById('tax_type').value='應稅';
+  refreshTempTable();
+});
+document.getElementById('clearAll').addEventListener('click', ()=>{ if(confirm('確定清除全部暫存？')){ items=[]; refreshTempTable(); }});
+document.getElementById('updatePreview').addEventListener('click', ()=> buildPreview());
+
+/* ---------- build preview HTML ---------- */
+function buildPreview(){
+  // get inputs
+  const seller = { name: escapeHtml(document.getElementById('seller_name').value), tax: escapeHtml(document.getElementById('seller_tax').value), addr: escapeHtml(document.getElementById('seller_addr').value) };
+  const buyer  = { name: escapeHtml(document.getElementById('buyer_name').value), tax: escapeHtml(document.getElementById('buyer_tax').value), addr: escapeHtml(document.getElementById('buyer_addr').value) };
+  const nota_no = escapeHtml(document.getElementById('nota_no').value);
+  const nota_date = escapeHtml(document.getElementById('nota_date').value);
+  const nota_note = escapeHtml(document.getElementById('nota_note').value);
+
+  // prepare items html + totals
+  let rowsHtml = '';
+  let sumU=0, sumTax=0, sumWith=0;
+  if(items.length === 0){
+    rowsHtml = `<tr><td colspan="9" class="center muted">（無明細）</td></tr>`;
+  } else {
+    items.forEach((it, idx)=>{
+const untaxed = Number(it.qty) * Number(it.price || 0);
+let tax = 0;
+if(it.tax_type === "應稅"){
+    tax = Math.round(untaxed * TAX_RATE * 100) / 100;
+} // 免稅、零稅率稅金 = 0
+const withtax = untaxed + tax;
+
+      sumU += untaxed; sumTax += tax; sumWith += withtax;
+      rowsHtml += `<tr>
+        <td>${idx+1}</td>
+        <td>${escapeHtml(it.inv_type)}</td>
+        <td>${escapeHtml(it.inv_date||'')}</td>
+        <td>${escapeHtml(it.inv_no)}</td>
+        <td>${escapeHtml(it.desc)}</td>
+        <td class="center">${it.qty}</td>
+        <td class="right">${fmt(it.price)}</td>
+        <td class="right">${fmt(untaxed)}</td>
+        <td class="right">${fmt(tax)}</td>
+        <td class="right">${fmt(withtax)}</td>
+        <td>${escapeHtml(it.tax_type)}</td>
+      </tr>`;
+    });
+  }
+
+  // build two pages, each page contains two copies (upper & lower)
+  const copyTitles = [
+    '第一聯:交付原銷貨人作為銷項稅額之扣減憑證',
+    '第二聯:交付原銷貨人作為銷項稅額之記帳憑證',
+    '第三聯:由進貨人作為進項稅額之扣減憑證',
+    '第四聯:由進貨人作為記帳憑證'
+  ];
+
+  const previewPages = document.getElementById('previewPages');
+  previewPages.innerHTML = ''; // clear
+
+  // create page builder (page holds two copies)
+  function makePage(startIndex){
+    const copyHtml = (index) => `
+      <div class="copy" data-copy-index="${index}">
+        <div class="title-center">營業人銷貨退回進貨退出或折讓證明單</div>
+        <div class="hdr">
+          <div class="left">
+
+<div style="font-weight:700">原開立銷貨發票單位</div>
+
+ <div>名    稱：${seller.name}</div>
+ <div>統一編號：${seller.tax}</div> 
+ <div>營業地址：${seller.addr}</div>
+
+</div>
+
+
+<div class="right" style="text-align:left;">
+
+  <div style="font-weight:500; font-size:10px">${escapeHtml(copyTitles[index])}</div>
+  <div>折讓日期：${nota_date || ''}</div>
+  <div style="margin-top:10px">折讓單編號：${nota_no || ''}</div>
+  <div style="margin-top:10px">備      註：${nota_note || ''}</div>
+
+
+          </div>
+        </div>
+
+
+        <table class="items-table">
+          <thead>
+<tr>
+<th>序號</th>
+<th>聯式</th>
+<th>發票<br>日期</th>
+<th>發票<br>號碼</th>
+<th>品名<br> / 說明</th>
+<th>數量</th>
+<th>單價（未稅）</th>
+<th>未稅<br>金額</th>
+<th>營業<br>稅額</th>
+<th>含稅<br>金額</th>
+<th>備註</th>
+</tr>
+          </thead>
+          <tbody>
+            ${rowsHtml}
+          </tbody>
+          <tfoot>
+            <tr>
+              <td colspan="7" class="right">合計</td>
+              <td class="right">${fmt(sumU)}</td>
+              <td class="right">${fmt(sumTax)}</td>
+              <td class="right">${fmt(sumWith)}</td>
+            </tr>
+          </tfoot>
+        </table>
+
+<div style="text-align:left; margin-top:5px; font-size:10px;">
+  本證明單所列銷貨退回退出或折讓，確屬事實，特此證明。
+</div>
+
+
+<div class="bottom" style="width:100%; margin-top:12px;">
+  <div class="left-block" style="width:50000%; border:2px solid red; padding:12px; box-sizing:border-box; height:100px;">
+
+            <div style="font-weight:700">原進貨人營業人(或原買受人)</div>
+
+            <div>名稱：${buyer.name}</div>
+
+            <div>統一編號(或身分證字號)：${buyer.tax}</div>
+
+            <div>地址：${buyer.addr}</div>
+
+
+<div style="text-align:right; margin-top:0px">
+  (蓋章或簽名)
+
+</div>
+
+
+
+            ${nota_note ? `<div style="margin-top:10px;">備註：${nota_note}</div>` : ''}
+          </div>
+
+          <div class="right-block"></div>
+        </div>
+
+
+<div style="text-align:left; margin-top:5px; font-size:10px;">
+注意事項：
+</div>
+<div style="text-align:left; margin-top:5px; font-size:10px;">
+一、紅色框框為"必填欄位"。
+</div>
+<div style="text-align:left; margin-top:5px; font-size:10px;">
+二、原開立公司發票者，請加蓋公司發票章，寄回本公司即可。
+</div>
+<div style="text-align:left; margin-top:5px; font-size:10px;">
+三、原開立個人發票者，請填寫本單必填欄位，並加「個人私章」寄回本公司即可。
+</div>
+
+
+
+
+  <!-- 右側直書 -->
+  <div class="vertical-label">
+
+  </div>
+</div>
+
+	
+
+    `;
+    // two copies per page: startIndex and startIndex+1
+    const pageHtml = `
+<div class="a4page">
+<div class="page-grid">
+${copyHtml(startIndex)}
+${copyHtml(startIndex+1)}
+</div>
+
+<!-- 每頁中間的虛線（會以 a4page 為基準） -->
+    <div class="page-divider"></div>
+
+</div>`;
+    previewPages.insertAdjacentHTML('beforeend', pageHtml);
+  }
+
+  makePage(0); // page1: copies 0 & 1
+  makePage(2); // page2: copies 2 & 3
+}
+
+/* ---------- PDF generation (render each .a4page via html2canvas -> add to jsPDF) ---------- */
+async function generatePdfByPages(){
+  const { jsPDF } = window.jspdf;
+  const pages = Array.from(document.querySelectorAll('#previewPages .a4page'));
+  if(pages.length===0){ alert('預覽尚未建立，請先按更新預覽'); return; }
+
+  // create jsPDF doc (mm)
+  const pdf = new jsPDF({ unit:'mm', format:'a4', orientation:'portrait' });
+  for(let i=0;i<pages.length;i++){
+    const el = pages[i];
+    // ensure element has white background for clean capture
+    el.style.background = '#fff';
+    // render to canvas
+    const canvas = await html2canvas(el, { scale:2, useCORS:true, backgroundColor: null });
+    const imgData = canvas.toDataURL('image/png');
+    // calculate image size in mm to fit A4
+    const pdfWidth = pdf.internal.pageSize.getWidth();
+    const imgWidth = pdfWidth;
+    const imgHeight = (canvas.height * imgWidth) / canvas.width;
+    if(i>0) pdf.addPage();
+    pdf.addImage(imgData, 'PNG', 0, 0, imgWidth, imgHeight);
+  }
+
+  const nota_no = document.getElementById('nota_no').value || '';
+  const filename = nota_no ? `折讓單_${nota_no}.pdf` : `折讓單.pdf`;
+  pdf.save(filename);
+}
+
+/* ---------- events ---------- */
+document.getElementById('downloadPdf').addEventListener('click', async ()=>{
+   // 套用 PDF 專用 CSS
+  // ensure preview is up-to-date
+  document.body.classList.add('pdf-mode');
+
+  // 重新生成預覽，確保縮小字體生效
+  buildPreview();
+
+  // 等 0.3 秒後生成 PDF
+  // wait a tick for rendering
+  setTimeout(()=>{
+    generatePdfByPages();
+
+ // PDF 生成完成後移除 PDF CSS（選擇性）
+  document.body.classList.remove('pdf-mode');
+
+
+
+
+ }, 300);
+});
+
+
+
+document.getElementById('downloadPdf2').addEventListener('click', ()=>{
+
+
+  // same action for other button
+  document.getElementById('downloadPdf').click();
+});
+
+
+
+/* init */
+refreshTempTable();
+buildPreview();
+
+</script>
+</body>
+</html>
